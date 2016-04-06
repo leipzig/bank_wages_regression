@@ -1,0 +1,201 @@
+---
+title: "problem3.7"
+author: "Jeremy Leipzig"
+date: "April 5, 2016"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(GGally)
+library(car)
+```
+
+
+> The data in the file _BANK_WAGES_ are from a study of employee compensation at the Harris Bank (Roberts, 1979). The file contains information on 116 employees (35 white males and 81 white females) hired during the years 1969-71 as general office trainees. The variables in the data set are defined in Table 3.17.
+
+### a. How could you use regression to test for the presence of gender discrimination in compensation by the bank? What should the regression model look like?
+
+A linear regression which takes into account the pertinent variables of sex, age, seniority, experience, and education can be used to model the salary. If sex is a statistically significant factor in current salary then the sex t-statistic should appear as a significant and the model itself should return a p-value from the F-statistic.
+
+
+### b. Test the hypothesis that there is no difference betweeen men and women in the lebel of compensation offered by the bank. Be sure to control for differences in education, prior work experience, and seniority. What is your conclusion?
+
+```{r loaddata}
+#  4500SAL_START 1129.0ID 1SEX 81SENIOR 289AGE 9240.0SAL_NOW 12EDUC 13.0WORK_EXP     1     0      0       0.0
+read.table("BANK_WAGES.txt",col.names = c("SAL_START","ID","SEX","SENIOR","AGE","SAL_NOW","EDUC","WORK_EXP","HS_GRAD","COLLEGE","COLL_GRAD","GRAD_SCH")) -> rawdata
+```
+
+## Data
+
+A sample of the data:
+'''{r datadesc}
+knitr::kable(head(rawdata))
+```
+SAL_START - Starting salary
+ID - employee id
+SEX - 0 female, 1 male
+SENIOR - Seniority in months
+AGE - Age in months
+SAL_NOW - Current salary, the dependent variable
+EDUC - Years of education
+Work_exp - Month of work experience
+HS_GRAD, COLLEGE, COLL_GRAD, GRAD_SCH - educational achievement binary choices
+```
+
+```{r wages}
+rawdata %>% mutate(sex=as.factor(ifelse(SEX==0,"Male","Female")))->wages
+
+wages %>% group_by(sex) %>% summarise(count=n(),salary=mean(SAL_NOW),senior=mean(SENIOR),mean_age=mean(AGE)/12,edu=mean(EDUC),num_hs=sum(HS_GRAD),num_col=sum(COLLEGE),num_bs=sum(COLL_GRAD),num_ms=sum(GRAD_SCH)) -> aggs
+
+knitr::kable(aggs)
+
+ggplot(wages, aes(sex, SAL_NOW)) + geom_boxplot() + theme_economist() + scale_fill_economist()
+```
+
+
+
+The dependent variable is `SAL_NOW`. Here is salary histograms by sex.
+
+
+```{r pressure}
+ggplot(wages,aes(x=SAL_NOW))+facet_grid(. ~ sex)+geom_histogram(binwidth=250)+ theme_economist() + scale_fill_economist()
+```
+
+
+## Scatterplot matrix
+
+Here I plot the continuous variables 
+```{r scatterplot}
+ggpairs(wages[,c("SAL_NOW","SENIOR","AGE","WORK_EXP","EDUC")], corSize = 1)
+```
+
+# [Assumptions of linear regression](https://www.statisticssolutions.com/assumptions-of-multiple-linear-regression)
+* Linear relationship.
+* Multivariate normality.
+* No or little multicollinearity.
+* No auto-correlation.
+* Homoscedasticity.
+
+## A full lm model
+Starting salary `SAL_START` might be a good leading indicator of current salary but it is not an _independent_ variable, but an other dependent variable. It should not be used in the regression.
+
+```{r model}
+mod1 <- lm(SAL_NOW ~ sex + AGE + SENIOR + WORK_EXP + EDUC + HS_GRAD + COLLEGE + COLL_GRAD + GRAD_SCH, data=wages)
+summary(mod1)
+```
+
+## Test for linear relationship
+Let's plot residuals vs fitted values
+```{r linear}
+choice_model <- mod1
+choice_df <- wages
+choice_df$resids <- resid(choice_model)
+choice_df$fitted.vales <- choice_model$fitted.values
+
+ggplot(choice_df,aes(fitted.vales, resids))+geom_point() + ggtitle("Observed vs Residuals")  + theme_economist() + scale_fill_economist()
+```
+
+Looks flat enough. The outlier is annoying me.
+
+## Test for normality of residuals
+```{r normality}
+ggplot(choice_df, aes(sample = resids)) + ggtitle("Residuals") + stat_qq()  + theme_economist() + scale_fill_economist()
+
+shapiro.test(choice_df$resids)
+```
+
+Once again the outlier!
+
+## Test for autocorrelation
+We removed starting salary.
+```{r dw}
+durbinWatsonTest(choice_model)
+```
+
+## Testing for multicollinearity
+
+Variance inflation factor test for multicollinearity - all should be under 2.
+```{r mc}
+sqrt(car::vif(choice_model))
+```
+
+We've got trouble here. The education levels are redundant with each other, and exclusive education graduate levels are not appropriate for regression. Let's assume everyone who finished college also finished high school, and create a dummy ordinal indicator for that measurement.
+
+Work experience also seems redundant with seniority, as we saw in the scatterplot.
+
+```{r gradlevel}
+wages$edu_level_text<-as.factor(ifelse(wages$GRAD_SCH==1,"GRAD_SCH",ifelse(wages$COLL_GRAD,"COLL_GRAD",ifelse(wages$COLLEGE,"SOME_COLLEGE",ifelse(wages$HS_GRAD,"HIGH_SCHOOL","GRAMMAR")))))
+wages <- within(wages, edu_level_text <- relevel(edu_level_text, ref = 'GRAMMAR'))
+
+wages$edu_level<-as.factor(ifelse(wages$GRAD_SCH==1,4,ifelse(wages$COLL_GRAD,3,ifelse(wages$COLLEGE,2,ifelse(wages$HS_GRAD,1,0)))))
+```
+
+
+## Remove the outlier
+```{r removeoutlier}
+remove_outlier_wages<-wages[-which(wages$SAL_NOW==max(wages$SAL_NOW)),]
+mod2 <- lm(SAL_NOW ~ sex + AGE + SENIOR + WORK_EXP + EDUC, data=remove_outlier_wages)
+summary(mod2)
+```
+
+## Edulevel
+```{r edulevelonly}
+mod4 <- lm(SAL_NOW ~ sex + AGE + SENIOR + WORK_EXP + edu_level, data=remove_outlier_wages)
+summary(mod4)
+choice_model<-mod4
+```
+
+## Goodness of fit comparison
+```{r gof1}
+anova(mod2,mod4)
+```
+
+## Drop AGE and WORK_EXP
+```{r drops}
+mod5 <- lm(SAL_NOW ~ sex +  SENIOR + edu_level, data=remove_outlier_wages)
+summary(mod5)
+choice_model<-mod5
+```
+
+## Goodness of fit comparison
+```{r gof2}
+anova(mod2,mod5)
+```
+It appears the reduction of the residual sum of squares is significant, but the fit is better if we keep age and work experience.
+
+## Retest
+```{r mcretest}
+sqrt(car::vif(mod4))
+
+shapiro.test(resid(mod4))
+```
+
+We reject the null hypothesis that sex is not a significant factor in current salary. Education level is also a significant factor.
+
+### c. Examine the residuals from your regression model. Are there any influential observations in the data? What other concerns might you have about the model?
+```{r resiplt}
+remove_outlier_wages$resid<-resid(mod4)
+ggplot(remove_outlier_wages,aes(x=resid))+geom_histogram()+ theme_economist() + scale_fill_economist()
+```
+
+I wonder if there is something in which lack of promotion also factors into ultimate salary. Do these assumptions hold up for old and young?
+## 40 and over
+```{r over40}
+remove_outlier_wages %>% filter(AGE>=40*12) -> oldsters
+mod6 <- lm(SAL_NOW ~ sex + AGE + SENIOR + WORK_EXP + edu_level, data=oldsters)
+summary(mod6)
+```
+
+## Under 40
+```{r under40}
+remove_outlier_wages %>% filter(AGE<40*12) -> youngsters
+mod7 <- lm(SAL_NOW ~ sex + AGE + SENIOR + WORK_EXP + edu_level, data=youngsters)
+summary(mod7)
+```
+
+If we look at the ages separately we fail to reject the null hypothesis of sex as a significant factor.
+
